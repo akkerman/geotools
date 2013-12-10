@@ -14,7 +14,7 @@ import org.geotools.jdbc.SQLDialect;
 public class HanaDataStoreFactory extends JDBCDataStoreFactory {
     @Override
     protected String getDatabaseID() {
-        return "HANA database";
+        return "sap";
     }
 
     @Override
@@ -34,6 +34,6 @@ public class HanaDataStoreFactory extends JDBCDataStoreFactory {
 
     @Override
     public String getDescription() {
-        return "HANA database, bij M. Akkerman";
+        return "SAP HANA database";
     }
 }
