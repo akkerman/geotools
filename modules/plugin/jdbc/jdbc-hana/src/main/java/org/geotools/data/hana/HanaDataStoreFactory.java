@@ -34,6 +34,6 @@ public class HanaDataStoreFactory extends JDBCDataStoreFactory {
 
     @Override
     public String getDescription() {
-        return "SAP HANA database";
+        return "SAP HANA database voor CGis";
     }
 }
