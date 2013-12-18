@@ -146,72 +146,71 @@ public class HanaDialect extends BasicSQLDialect {
     @Override
     public void encodeGeometryEnvelope(String tableName, String geometryColumn,
                                        StringBuffer sql) {
-        sql.append("ST_AsText(ST_Force_2D(ST_Envelope(");
-        sql.append("ST_Extent(\"" + geometryColumn + "\"::geometry))))");
+        sql.append("ST_AsText(ST_Envelope(ST_GeomFromText(\""+ geometryColumn+ "\")))");
     }
 
     @Override
     public List<ReferencedEnvelope> getOptimizedBounds(String schema, SimpleFeatureType featureType,
                                                        Connection cx) throws SQLException, IOException {
-        if (!estimatedExtentsEnabled)
-            return null;
-
-        String tableName = featureType.getTypeName();
-
-        Statement st = null;
-        ResultSet rs = null;
-
-        List<ReferencedEnvelope> result = new ArrayList<ReferencedEnvelope>();
-        Savepoint savePoint = null;
-        try {
-            st = cx.createStatement();
-            if (!cx.getAutoCommit()) {
-                savePoint = cx.setSavepoint();
-            }
-
-            for (AttributeDescriptor att : featureType.getAttributeDescriptors()) {
-                if (att instanceof GeometryDescriptor) {
-                    // use estimated extent (optimizer statistics)
-                    StringBuffer sql = new StringBuffer();
-                    sql.append("select ST_AsText(ST_force_2d(ST_Envelope(ST_Estimated_Extent('");
-                    if (schema != null) {
-                        sql.append(schema);
-                        sql.append("', '");
-                    }
-                    sql.append(tableName);
-                    sql.append("', '");
-                    sql.append(att.getName().getLocalPart());
-                    sql.append("'))))");
-                    rs = st.executeQuery(sql.toString());
-
-                    if (rs.next()) {
-                        // decode the geometry
-                        Envelope env = decodeGeometryEnvelope(rs, 1, cx);
-
-                        // reproject and merge
-                        if (!env.isNull()) {
-                            CoordinateReferenceSystem crs = ((GeometryDescriptor) att)
-                                    .getCoordinateReferenceSystem();
-                            result.add(new ReferencedEnvelope(env, crs));
-                        }
-                    }
-                    rs.close();
-                }
-            }
-        } catch (SQLException e) {
-            if (savePoint != null) {
-                cx.rollback(savePoint);
-            }
-            LOGGER.log(Level.WARNING, "Failed to use ST_Estimated_Extent, falling back on envelope aggregation", e);
-            return null;
-        } finally {
-            if (savePoint != null) {
-                cx.releaseSavepoint(savePoint);
-            }
-            dataStore.closeSafe(rs);
-            dataStore.closeSafe(st);
-        }
-        return result;
+//        if (!estimatedExtentsEnabled)
+//            return null;
+//
+//        String tableName = featureType.getTypeName();
+//
+//        Statement st = null;
+//        ResultSet rs = null;
+//
+//        List<ReferencedEnvelope> result = new ArrayList<ReferencedEnvelope>();
+//        Savepoint savePoint = null;
+//        try {
+//            st = cx.createStatement();
+//            if (!cx.getAutoCommit()) {
+//                savePoint = cx.setSavepoint();
+//            }
+//
+//            for (AttributeDescriptor att : featureType.getAttributeDescriptors()) {
+//                if (att instanceof GeometryDescriptor) {
+//                    // use estimated extent (optimizer statistics)
+//                    StringBuffer sql = new StringBuffer();
+//                    sql.append("select ST_AsText(ST_Envelope())");
+//                    if (schema != null) {
+//                        sql.append(schema);
+//                        sql.append("', '");
+//                    }
+//                    sql.append(tableName);
+//                    sql.append("', '");
+//                    sql.append(att.getName().getLocalPart());
+//                    sql.append("'))))");
+//                    rs = st.executeQuery(sql.toString());
+//
+//                    if (rs.next()) {
+//                        // decode the geometry
+//                        Envelope env = decodeGeometryEnvelope(rs, 1, cx);
+//
+//                        // reproject and merge
+//                        if (!env.isNull()) {
+//                            CoordinateReferenceSystem crs = ((GeometryDescriptor) att)
+//                                    .getCoordinateReferenceSystem();
+//                            result.add(new ReferencedEnvelope(env, crs));
+//                        }
+//                    }
+//                    rs.close();
+//                }
+//            }
+//        } catch (SQLException e) {
+//            if (savePoint != null) {
+//                cx.rollback(savePoint);
+//            }
+//            LOGGER.log(Level.WARNING, "Failed to use ST_Estimated_Extent, falling back on envelope aggregation", e);
+//            return null;
+//        } finally {
+//            if (savePoint != null) {
+//                cx.releaseSavepoint(savePoint);
+//            }
+//            dataStore.closeSafe(rs);
+//            dataStore.closeSafe(st);
+//        }
+        return null;
     }
 
     @Override
@@ -329,77 +328,78 @@ public class HanaDialect extends BasicSQLDialect {
     public Integer getGeometrySRID(String schemaName, String tableName,
                                    String columnName, Connection cx) throws SQLException {
 
-        // first attempt, try with the geometry metadata
-        Statement statement = null;
-        ResultSet result = null;
-        Integer srid = null;
-        try {
-            schemaName = "SYS";
-            // try geometry_columns
-            try {
-                String sqlStatement = "SELECT SRS_ID FROM ST_GEOMETRY_COLUMNS WHERE " //
-                        + "SCHEMA_NAME = '" + schemaName + "' " //
-                        + "AND TABLE_NAME = '" + tableName + "' " //
-                        + "AND COLUMN_ID = '" + columnName + "'";
-
-                LOGGER.log(Level.FINE, "Geometry srid check; {0} ", sqlStatement);
-                statement = cx.createStatement();
-                result = statement.executeQuery(sqlStatement);
-
-                if (result.next()) {
-                    srid = result.getInt(1);
-                }
-            } catch (SQLException e) {
-                LOGGER.log(Level.WARNING, "Failed to retrieve information about "
-                        + schemaName + "." + tableName + "." + columnName
-                        + " from the geometry_columns table, checking the first geometry instead", e);
-            } finally {
-                dataStore.closeSafe(result);
-            }
-
-            // fall back on inspection of the first geometry, assuming uniform srid (fair assumption
-            // an unpredictable srid makes the table un-queriable)
-            //JD: In postgis 2.0 forward there is no way to leave a geometry srid unset since 
-            // geometry_columns is a view populated from system tables, so we check for 0 and take
-            // that to mean unset
-
-            if (srid == null) {
-                return 4326;
-            }
-        } finally {
-            dataStore.closeSafe(result);
-            dataStore.closeSafe(statement);
-        }
-
-        return srid;
+//        // first attempt, try with the geometry metadata
+//        Statement statement = null;
+//        ResultSet result = null;
+//        Integer srid = null;
+//        try {
+//            schemaName = "SYS";
+//            // try geometry_columns
+//            try {
+//                String sqlStatement = "SELECT SRS_ID FROM ST_GEOMETRY_COLUMNS WHERE " //
+//                        + "SCHEMA_NAME = '" + schemaName + "' " //
+//                        + "AND TABLE_NAME = '" + tableName + "' " //
+//                        + "AND COLUMN_NAME = '" + columnName + "'";
+//
+//                LOGGER.log(Level.FINE, "Geometry srid check; {0} ", sqlStatement);
+//                statement = cx.createStatement();
+//                result = statement.executeQuery(sqlStatement);
+//
+//                if (result.next()) {
+//                    srid = result.getInt(1);
+//                }
+//            } catch (SQLException e) {
+//                LOGGER.log(Level.WARNING, "Failed to retrieve information about "
+//                        + schemaName + "." + tableName + "." + columnName
+//                        + " from the geometry_columns table, checking the first geometry instead", e);
+//            } finally {
+//                dataStore.closeSafe(result);
+//            }
+//
+//            // fall back on inspection of the first geometry, assuming uniform srid (fair assumption
+//            // an unpredictable srid makes the table un-queriable)
+//            //JD: In postgis 2.0 forward there is no way to leave a geometry srid unset since
+//            // geometry_columns is a view populated from system tables, so we check for 0 and take
+//            // that to mean unset
+//
+//            if (srid == null) {
+//                return 4326;
+//            }
+//        } finally {
+//            dataStore.closeSafe(result);
+//            dataStore.closeSafe(statement);
+//        }
+//
+//        return srid;
+        return 4326;
     }
 
     @Override
     public String getSequenceForColumn(String schemaName, String tableName,
                                        String columnName, Connection cx) throws SQLException {
-        Statement st = cx.createStatement();
-        try {
-            // pg_get_serial_sequence oddity: table name needs to be
-            // escaped with "", whilst column name, doesn't...
-            String sql = "SELECT pg_get_serial_sequence('\"";
-            if (schemaName != null && !"".equals(schemaName))
-                sql += schemaName + "\".\"";
-            sql += tableName + "\"', '" + columnName + "')";
+//        Statement st = cx.createStatement();
+//        try {
+//            // pg_get_serial_sequence oddity: table name needs to be
+//            // escaped with "", whilst column name, doesn't...
+//            String sql = "SELECT pg_get_serial_sequence('\"";
+//            if (schemaName != null && !"".equals(schemaName))
+//                sql += schemaName + "\".\"";
+//            sql += tableName + "\"', '" + columnName + "')";
+//
+//            dataStore.getLogger().fine(sql);
+//            ResultSet rs = st.executeQuery(sql);
+//            try {
+//                if (rs.next()) {
+//                    return rs.getString(1);
+//                }
+//            } finally {
+//                dataStore.closeSafe(rs);
+//            }
+//        } finally {
+//            dataStore.closeSafe(st);
+//        }
 
-            dataStore.getLogger().fine(sql);
-            ResultSet rs = st.executeQuery(sql);
-            try {
-                if (rs.next()) {
-                    return rs.getString(1);
-                }
-            } finally {
-                dataStore.closeSafe(rs);
-            }
-        } finally {
-            dataStore.closeSafe(st);
-        }
-
-        return null;
+        return "SEQ1";
     }
 
     @Override
