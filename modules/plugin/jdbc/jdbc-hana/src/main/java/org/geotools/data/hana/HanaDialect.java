@@ -2,6 +2,7 @@ package org.geotools.data.hana;
 
 import com.vividsolutions.jts.geom.*;
 import com.vividsolutions.jts.io.ParseException;
+import com.vividsolutions.jts.io.WKBReader;
 import com.vividsolutions.jts.io.WKTReader;
 import org.geotools.data.jdbc.FilterToSQL;
 import org.geotools.factory.Hints;
@@ -13,7 +14,7 @@ import org.geotools.referencing.CRS;
 import org.opengis.feature.simple.SimpleFeatureType;
 import org.opengis.feature.type.AttributeDescriptor;
 import org.opengis.feature.type.GeometryDescriptor;
-import org.opengis.referencing.crs.CoordinateReferenceSystem;
+
 
 import java.io.IOException;
 import java.sql.*;
@@ -29,7 +30,6 @@ public class HanaDialect extends BasicSQLDialect {
     final static Map<String, Class> TYPE_TO_CLASS_MAP = new HashMap<String, Class>() {
         {
             put("GEOMETRY", Geometry.class);
-            put("GEOGRAPHY", Geometry.class);
             put("POINT", Point.class);
             put("LINESTRING", LineString.class);
             put("POLYGON", Polygon.class);
@@ -60,156 +60,34 @@ public class HanaDialect extends BasicSQLDialect {
         super(dataStore);
     }
 
-    boolean looseBBOXEnabled = false;
-
-    boolean estimatedExtentsEnabled = false;
-
-    boolean functionEncodingEnabled = false;
-
-    @Override
-    public void initializeConnection(Connection cx) throws SQLException {
-        super.initializeConnection(cx);
-    }
-
     @Override
     public boolean includeTable(String schemaName, String tableName,
                                 Connection cx) throws SQLException {
-        if (tableName.equals("ST_GEOMETRY_COLUMNS")) {
-            return false;
-        } else if (tableName.startsWith("ST_SPATIAL_REFERENCE_SYSTEMS")) {
-            return false;
-        }
-        return true;
-    }
-
-    ThreadLocal<WKBAttributeIO> wkbReader = new ThreadLocal<WKBAttributeIO>();
-
-    @Override
-    public Geometry decodeGeometryValue(GeometryDescriptor descriptor,
-                                        ResultSet rs, String column, GeometryFactory factory, Connection cx)
-            throws IOException, SQLException {
-        WKBAttributeIO reader = getWKBReader(factory);
-        return (Geometry) reader.read(rs, column);
-    }
-
-    public Geometry decodeGeometryValue(GeometryDescriptor descriptor,
-                                        ResultSet rs, int column, GeometryFactory factory, Connection cx)
-            throws IOException, SQLException {
-        WKBAttributeIO reader = getWKBReader(factory);
-        return (Geometry) reader.read(rs, column);
-    }
-
-    private WKBAttributeIO getWKBReader(GeometryFactory factory) {
-        WKBAttributeIO reader = wkbReader.get();
-        if (reader == null) {
-            reader = new WKBAttributeIO(factory);
-            wkbReader.set(reader);
-        } else {
-            reader.setGeometryFactory(factory);
-        }
-        return reader;
+        return !tableName.equals("ST_GEOMETRY_COLUMNS");
     }
 
     @Override
-    public void encodeGeometryColumn(GeometryDescriptor gatt, String prefix, int srid,
-                                     StringBuffer sql) {
-        encodeGeometryColumn(gatt, prefix, srid, null, sql);
-    }
+    public Geometry decodeGeometryValue(GeometryDescriptor descriptor, ResultSet rs, String column, GeometryFactory factory, Connection cx) throws IOException, SQLException {
 
-    @Override
-    public void encodeGeometryColumn(GeometryDescriptor gatt, String prefix, int srid, Hints hints,
-                                     StringBuffer sql) {
-
-        boolean geography = "geography".equals(gatt.getUserData().get(
-                JDBCDataStore.JDBC_NATIVE_TYPENAME));
-
-        if (geography) {
-            sql.append("encode(ST_AsBinary(");
-            encodeColumnName(prefix, gatt.getLocalName(), sql);
-            sql.append("),'base64')");
-        } else {
-            boolean force2D = hints != null && hints.containsKey(Hints.FEATURE_2D) &&
-                    Boolean.TRUE.equals(hints.get(Hints.FEATURE_2D));
-
-            if (force2D) {
-                sql.append("encode(ST_AsBinary(ST_Force_2D(");
-                encodeColumnName(prefix, gatt.getLocalName(), sql);
-                sql.append(")),'base64')");
-            } else {
-                sql.append("encode(ST_AsEWKB(");
-                encodeColumnName(prefix, gatt.getLocalName(), sql);
-                sql.append("),'base64')");
-            }
+        try {
+            Geometry geometry = new WKTReader(factory).read(rs.getString(column));
+            return geometry;
+        } catch (ParseException e) {
+            e.printStackTrace();
+            return null;
         }
+
     }
 
     @Override
     public void encodeGeometryEnvelope(String tableName, String geometryColumn,
                                        StringBuffer sql) {
-        sql.append("ST_AsText(ST_Envelope(ST_GeomFromText(\""+ geometryColumn+ "\")))");
+        sql.append("ST_AsText(ST_Envelope(ST_GeomFromText(\"" + geometryColumn + "\")))");
     }
 
     @Override
     public List<ReferencedEnvelope> getOptimizedBounds(String schema, SimpleFeatureType featureType,
                                                        Connection cx) throws SQLException, IOException {
-//        if (!estimatedExtentsEnabled)
-//            return null;
-//
-//        String tableName = featureType.getTypeName();
-//
-//        Statement st = null;
-//        ResultSet rs = null;
-//
-//        List<ReferencedEnvelope> result = new ArrayList<ReferencedEnvelope>();
-//        Savepoint savePoint = null;
-//        try {
-//            st = cx.createStatement();
-//            if (!cx.getAutoCommit()) {
-//                savePoint = cx.setSavepoint();
-//            }
-//
-//            for (AttributeDescriptor att : featureType.getAttributeDescriptors()) {
-//                if (att instanceof GeometryDescriptor) {
-//                    // use estimated extent (optimizer statistics)
-//                    StringBuffer sql = new StringBuffer();
-//                    sql.append("select ST_AsText(ST_Envelope())");
-//                    if (schema != null) {
-//                        sql.append(schema);
-//                        sql.append("', '");
-//                    }
-//                    sql.append(tableName);
-//                    sql.append("', '");
-//                    sql.append(att.getName().getLocalPart());
-//                    sql.append("'))))");
-//                    rs = st.executeQuery(sql.toString());
-//
-//                    if (rs.next()) {
-//                        // decode the geometry
-//                        Envelope env = decodeGeometryEnvelope(rs, 1, cx);
-//
-//                        // reproject and merge
-//                        if (!env.isNull()) {
-//                            CoordinateReferenceSystem crs = ((GeometryDescriptor) att)
-//                                    .getCoordinateReferenceSystem();
-//                            result.add(new ReferencedEnvelope(env, crs));
-//                        }
-//                    }
-//                    rs.close();
-//                }
-//            }
-//        } catch (SQLException e) {
-//            if (savePoint != null) {
-//                cx.rollback(savePoint);
-//            }
-//            LOGGER.log(Level.WARNING, "Failed to use ST_Estimated_Extent, falling back on envelope aggregation", e);
-//            return null;
-//        } finally {
-//            if (savePoint != null) {
-//                cx.releaseSavepoint(savePoint);
-//            }
-//            dataStore.closeSafe(rs);
-//            dataStore.closeSafe(st);
-//        }
         return null;
     }
 
@@ -239,10 +117,8 @@ public class HanaDialect extends BasicSQLDialect {
         }
 
         String gType = null;
-        if ("geometry".equalsIgnoreCase(typeName)) {
-            gType = lookupGeometryType(columnMetaData, cx, "geometry_columns", "f_geometry_column");
-        } else if ("geography".equalsIgnoreCase(typeName)) {
-            gType = lookupGeometryType(columnMetaData, cx, "geography_columns", "f_geography_column");
+        if ("ST_GEOMETRY".equalsIgnoreCase(typeName)) {
+            gType = lookupGeometryType(columnMetaData, cx, "ST_GEOMETRY_COLUMNS", "DATA_TYPE_NAME");
         } else {
             return null;
         }
@@ -275,9 +151,9 @@ public class HanaDialect extends BasicSQLDialect {
         ResultSet result = null;
 
         try {
-            String sqlStatement = "SELECT TYPE FROM " + gTableName + " WHERE " //
-                    + "F_TABLE_SCHEMA = '" + schemaName + "' " //
-                    + "AND F_TABLE_NAME = '" + tableName + "' " //
+            String sqlStatement = "SELECT DATA_TYPE_NAME FROM " + gTableName + " WHERE " //
+                    + "SCHEMA_NAME = '" + schemaName + "' " //
+                    + "AND TABLE_NAME = '" + tableName + "' " //
                     + "AND " + gColumnName + " = '" + columnName + "'";
 
             LOGGER.log(Level.FINE, "Geometry type check; {0} ", sqlStatement);
@@ -296,109 +172,14 @@ public class HanaDialect extends BasicSQLDialect {
     }
 
     @Override
-    public void handleUserDefinedType(ResultSet columnMetaData, ColumnMetadata metadata,
-                                      Connection cx) throws SQLException {
-
-        String tableName = columnMetaData.getString("TABLE_NAME");
-        String columnName = columnMetaData.getString("COLUMN_NAME");
-        String schemaName = columnMetaData.getString("SCHEMA_NAME");
-
-        String sql = "SELECT udt_name FROM information_schema.columns " +
-                " WHERE table_schema = '" + schemaName + "' " +
-                "   AND table_name = '" + tableName + "' " +
-                "   AND column_name = '" + columnName + "' ";
-        LOGGER.fine(sql);
-
-        Statement st = cx.createStatement();
-        try {
-            ResultSet rs = st.executeQuery(sql);
-            try {
-                if (rs.next()) {
-                    metadata.setTypeName(rs.getString(1));
-                }
-            } finally {
-                dataStore.closeSafe(rs);
-            }
-        } finally {
-            dataStore.closeSafe(st);
-        }
-    }
-
-    @Override
     public Integer getGeometrySRID(String schemaName, String tableName,
                                    String columnName, Connection cx) throws SQLException {
-
-//        // first attempt, try with the geometry metadata
-//        Statement statement = null;
-//        ResultSet result = null;
-//        Integer srid = null;
-//        try {
-//            schemaName = "SYS";
-//            // try geometry_columns
-//            try {
-//                String sqlStatement = "SELECT SRS_ID FROM ST_GEOMETRY_COLUMNS WHERE " //
-//                        + "SCHEMA_NAME = '" + schemaName + "' " //
-//                        + "AND TABLE_NAME = '" + tableName + "' " //
-//                        + "AND COLUMN_NAME = '" + columnName + "'";
-//
-//                LOGGER.log(Level.FINE, "Geometry srid check; {0} ", sqlStatement);
-//                statement = cx.createStatement();
-//                result = statement.executeQuery(sqlStatement);
-//
-//                if (result.next()) {
-//                    srid = result.getInt(1);
-//                }
-//            } catch (SQLException e) {
-//                LOGGER.log(Level.WARNING, "Failed to retrieve information about "
-//                        + schemaName + "." + tableName + "." + columnName
-//                        + " from the geometry_columns table, checking the first geometry instead", e);
-//            } finally {
-//                dataStore.closeSafe(result);
-//            }
-//
-//            // fall back on inspection of the first geometry, assuming uniform srid (fair assumption
-//            // an unpredictable srid makes the table un-queriable)
-//            //JD: In postgis 2.0 forward there is no way to leave a geometry srid unset since
-//            // geometry_columns is a view populated from system tables, so we check for 0 and take
-//            // that to mean unset
-//
-//            if (srid == null) {
-//                return 4326;
-//            }
-//        } finally {
-//            dataStore.closeSafe(result);
-//            dataStore.closeSafe(statement);
-//        }
-//
-//        return srid;
         return 4326;
     }
 
     @Override
     public String getSequenceForColumn(String schemaName, String tableName,
                                        String columnName, Connection cx) throws SQLException {
-//        Statement st = cx.createStatement();
-//        try {
-//            // pg_get_serial_sequence oddity: table name needs to be
-//            // escaped with "", whilst column name, doesn't...
-//            String sql = "SELECT pg_get_serial_sequence('\"";
-//            if (schemaName != null && !"".equals(schemaName))
-//                sql += schemaName + "\".\"";
-//            sql += tableName + "\"', '" + columnName + "')";
-//
-//            dataStore.getLogger().fine(sql);
-//            ResultSet rs = st.executeQuery(sql);
-//            try {
-//                if (rs.next()) {
-//                    return rs.getString(1);
-//                }
-//            } finally {
-//                dataStore.closeSafe(rs);
-//            }
-//        } finally {
-//            dataStore.closeSafe(st);
-//        }
-
         return "SEQ1";
     }
 
@@ -407,7 +188,7 @@ public class HanaDialect extends BasicSQLDialect {
                                        Connection cx) throws SQLException {
         Statement st = cx.createStatement();
         try {
-            String sql = "SELECT sequenceName.NEXTVAL FROM DUMMY";
+            String sql = "SELECT \""+ sequenceName + "\".NEXTVAL FROM DUMMY";
 
             dataStore.getLogger().fine(sql);
             ResultSet rs = st.executeQuery(sql);
@@ -590,21 +371,30 @@ public class HanaDialect extends BasicSQLDialect {
                 value = value.getFactory().createLineString(((LinearRing) value).getCoordinateSequence());
             }
 
-            sql.append("ST_GeomFromText('" + value.toText() + "', " + srid + ")");
+            sql.append("new ST_MultiPolygon('" + value.toText() + "')");
         }
     }
 
     @Override
     public FilterToSQL createFilterToSQL() {
-        HanaFilterToSQL sql = new HanaFilterToSQL(this);
-        sql.setLooseBBOXEnabled(looseBBOXEnabled);
-        sql.setFunctionEncodingEnabled(functionEncodingEnabled);
+
+        FilterToSQL sql = super.createFilterToSQL();
         return sql;
     }
 
     @Override
+    public void encodePostSelect(SimpleFeatureType featureType, StringBuffer sql) {
+        if (sql != null) {
+            LOGGER.entering("encodePostSelect", "aybabtu");
+        }
+
+    }
+
+    @Override
     public void onSelect(Statement select, Connection cx, SimpleFeatureType featureType) throws SQLException {
-        super.onSelect(select, cx, featureType);
+        if (select != null) {
+            LOGGER.entering("onSelect","aybabtu");
+        }
     }
 
     @Override
